@@ -10,7 +10,7 @@ UDP voice call safe edition
 
 import argparse
 import asyncio
-import audioop
+import numpy as np
 import pyaudio
 import socket
 import sys
@@ -195,6 +195,28 @@ class UDPVoiceCall:
             print("Ошибка: не найдено корректное аудио-устройство:", e)
             return False
 
+    # ----- Audio processing with numpy -----
+    def apply_limiter_numpy(self, data: bytes) -> bytes:
+        """Apply limiter to audio data using numpy instead of audioop."""
+        try:
+            # Convert bytes to numpy array (int16)
+            audio_array = np.frombuffer(data, dtype=np.int16)
+            
+            # Find peak
+            peak = np.max(np.abs(audio_array))
+            
+            if peak > MAX_PEAK:
+                # Apply limiter
+                factor = MAX_PEAK / float(peak)
+                audio_array = (audio_array * factor).astype(np.int16)
+                self.debug_log(f"Limiter: peak={peak} scaled by {factor:.3f}")
+            
+            # Convert back to bytes
+            return audio_array.tobytes()
+        except Exception as e:
+            self.debug_log("numpy limiter error:", e)
+            return data  # Return original data on error
+
     # ----- Async socket wrappers for cross-loop compatibility -----
     async def _async_sendto(self, data: bytes) -> bool:
         loop = asyncio.get_running_loop()
@@ -268,15 +290,8 @@ class UDPVoiceCall:
                     await asyncio.sleep(0.01)
                     continue
 
-                # limiter
-                try:
-                    peak = audioop.max(data, 2)
-                    if peak > MAX_PEAK:
-                        factor = MAX_PEAK / float(peak)
-                        data = audioop.mul(data, 2, factor)
-                        self.debug_log(f"Limiter: peak={peak} scaled by {factor:.3f}")
-                except Exception as e:
-                    self.debug_log("audioop error:", e)
+                # Apply limiter using numpy
+                data = self.apply_limiter_numpy(data)
 
                 # Отправляем через совместимый wrapper
                 ok = await self._async_sendto(data)
@@ -334,15 +349,8 @@ class UDPVoiceCall:
                     self.debug_log(f"Invalid packet size: {len(data)} bytes (expected {EXPECTED_BYTES}) discarded")
                     continue
 
-                # limiter on input
-                try:
-                    peak = audioop.max(data, 2)
-                    if peak > MAX_PEAK:
-                        factor = MAX_PEAK / float(peak)
-                        data = audioop.mul(data, 2, factor)
-                        self.debug_log(f"Limiter on input: peak={peak} scaled by {factor:.3f}")
-                except Exception as e:
-                    self.debug_log("audioop error on input:", e)
+                # Apply limiter on input using numpy
+                data = self.apply_limiter_numpy(data)
 
                 # Play
                 try:
